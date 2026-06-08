@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "covenant-pwa",
     "public": "dist",
     "ignore": [
       "firebase.json",
