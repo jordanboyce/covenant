@@ -95,83 +95,98 @@ function pageText(items) {
   return items.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim()
 }
 
-// Extract verse-level data from a page's text items
-function extractPageVerses(items) {
+// Extract verse-level data from a page's text items.
+// pageWidth is used to split the two-column layout (left col first, then right).
+function extractPageVerses(items, pageWidth) {
   if (!items.length) return []
   const maxY = Math.max(...items.map(i => i.transform[5]))
-  // Remove running header (top 8 units of page Y)
-  const body = items.filter(i => i.transform[5] < maxY - 8)
+
+  // Remove running header (top 8 pts), footnotes (h≈8.3), and section headings (h≈10.0).
+  // LDS scripture PDFs: body text h≈10.4, section headings h≈10.0, footnote text h≈8.3, footnote letters h≈6.
+  const body = items.filter(i => i.transform[5] < maxY - 8 && Math.abs(i.transform[3]) >= 10.2)
   if (!body.length) return []
 
-  // Build text, fixing column hyphenation
-  const text = body.map(i => i.str).join(' ')
+  // Two-column layout: left column then right column, each top-to-bottom left-to-right.
+  const colSplit = (pageWidth || 432) / 2
+  const byRow = (a, b) => {
+    const dy = b.transform[5] - a.transform[5]
+    return Math.abs(dy) > 2 ? dy : a.transform[4] - b.transform[4]
+  }
+  const left  = body.filter(i => i.transform[4] < colSplit).sort(byRow)
+  const right = body.filter(i => i.transform[4] >= colSplit).sort(byRow)
+
+  let text = [...left, ...right].map(i => i.str).join(' ')
     .replace(/\s+/g, ' ')
-    .replace(/([a-zA-Z])-\s+([a-zA-Z])/g, '$1$2')
+    .replace(/([a-zA-Z])-\s+([a-zA-Z])/g, '$1$2')  // fix column-break hyphenation
     .trim()
 
-  // Split on verse boundaries: " N Capital" pattern
-  // prepend space so verse 1 at start of text matches too
-  const parts = (' ' + text).split(/ (\d{1,3}) (?=[A-Z])/g)
-  // result: [pretext, "n1", "verseText1", "n2", "verseText2", ...]
+  // Strip chapter headings (e.g. "C HAPTER 32 " in LDS small-caps two-column format)
+  text = text.replace(/C\s+HAPTER\s+\d+\s+/g, '')
 
+  // Split on verse boundaries: " N Capital" — also handles KJV pilcrow (¶) before verse text
+  const parts = (' ' + text).split(/ (\d{1,3}) (?=[A-Z¶])/g)
   const verses = []
   for (let i = 1; i + 1 < parts.length; i += 2) {
     const n = parseInt(parts[i])
-    const t = parts[i + 1].trim()
+    const t = parts[i + 1].replace(/^¶\s*/, '').trim()  // strip leading ¶
     if (n >= 1 && n <= 250) verses.push({ n, text: t })
   }
   return verses
 }
 
-// Merge and validate verses across chapter pages into a clean sequence
+// Merge and validate verses from consecutive pages into a clean monotonic sequence.
 function assembleChapterVerses(pageVerseArrays) {
-  // Flatten all verses from all pages in order
   const all = []
   for (const pv of pageVerseArrays) {
     for (const v of pv) {
-      // Merge continuation of same verse across page break
       if (all.length > 0 && v.n === all[all.length - 1].n) {
-        all[all.length - 1].text += ' ' + v.text
+        all[all.length - 1].text += ' ' + v.text  // continuation across page break
       } else {
         all.push({ n: v.n, text: v.text })
       }
     }
   }
 
-  // Find first verse 1 to start the sequence
   const startIdx = Math.max(0, all.findIndex(v => v.n === 1))
   const valid = []
   let maxN = 0
-
   for (let i = startIdx; i < all.length; i++) {
     const v = all[i]
     if (v.n > maxN && v.n <= maxN + 5 && v.text.length >= 5) {
-      // Accept: advances the sequence (allows gaps up to 5 for missed/false-positive verses)
       valid.push({ n: v.n, text: v.text })
       maxN = v.n
     } else if (v.n < maxN - 10 && valid.length >= 5) {
-      // Large backward jump after substantial content = crossed into next chapter
-      break
+      break  // large backward jump = entered next chapter
     }
   }
   return valid
 }
 
-// Build per-chapter verse data from indexed page items + nav book data
-function buildScriptureChapters(allPageItems, books, totalPages) {
+// Build per-chapter verse data from indexed page items + nav book data.
+// pages is the [{p, ref}] array used to determine whether the lookback page
+// belongs to a previous chapter (has a running header) or is a chapter-opening
+// title page (no running header, ref='').
+function buildScriptureChapters(allPageItems, books, totalPages, pages) {
+  const pageRefs = new Map(pages.map(p => [p.p, p.ref]))
   const chapters = []
+
   for (const book of books) {
     for (let i = 0; i < book.chapters.length; i++) {
       const ch = book.chapters[i]
       const nextCh = book.chapters[i + 1]
-      // Include page before chapter start (catches opening pages without running headers)
-      const startPage = Math.max(1, ch.page - 1)
+
+      // Include the page before the nav start only when it has no running header —
+      // that signals a chapter-title/intro page whose verse content belongs here.
+      // Pages with a running header belong to the previous chapter.
+      const lookback = ch.page - 1
+      const startPage = (lookback >= 1 && (pageRefs.get(lookback) || '') === '')
+        ? lookback : ch.page
       const endPage = nextCh ? nextCh.page : Math.min(totalPages, ch.page + 30)
 
       const pageVerseArrays = []
       for (let p = startPage; p <= endPage; p++) {
-        const items = allPageItems[p - 1]  // 0-indexed
-        if (items) pageVerseArrays.push(extractPageVerses(items))
+        const entry = allPageItems[p - 1]
+        if (entry) pageVerseArrays.push(extractPageVerses(entry.items, entry.width))
       }
       const verses = assembleChapterVerses(pageVerseArrays)
       if (verses.length > 0) {
@@ -198,8 +213,10 @@ async function indexReferencePdf(docId, file, books) {
   const byBook = new Map() // name -> { name, page, chapters:[{n,page}], seen:Set }
 
   for (let n = 1; n <= pdf.numPages; n++) {
-    const items = (await pdf.getPage(n).then((p) => p.getTextContent())).items
-    allPageItems.push(items)
+    const page = await pdf.getPage(n)
+    const items = (await page.getTextContent()).items
+    const width = page.getViewport({ scale: 1 }).width
+    allPageItems.push({ items, width })
     const ref = parseHeader(topLine(items), table)
     const text = pageText(items)
     pages.push({ p: n, ref: ref ? refLabel(ref) : '', text })
@@ -344,10 +361,10 @@ async function main() {
   write('pages-bible.json', bible.pages)
 
   console.log('Building scripture verse data…')
-  const scriptureTriple = buildScriptureChapters(triple.allPageItems, triple.books, triple.numPages)
+  const scriptureTriple = buildScriptureChapters(triple.allPageItems, triple.books, triple.numPages, triple.pages)
   write('scripture-triple.json', scriptureTriple)
 
-  const scriptureBible = buildScriptureChapters(bible.allPageItems, bible.books, bible.numPages)
+  const scriptureBible = buildScriptureChapters(bible.allPageItems, bible.books, bible.numPages, bible.pages)
   write('scripture-bible.json', scriptureBible)
 
   console.log('Come, Follow Me…')
