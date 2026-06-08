@@ -1,0 +1,90 @@
+/* ---- DESIGN TOKENS: neutral, auto light/dark ---- */
+:root {
+  color-scheme: light dark;
+
+  /* Light theme (default) */
+  --bg:           #ffffff;
+  --bg-subtle:    #f4f4f3;
+  --bg-elevated:  #ffffff;
+  --border:       #e4e4e2;
+  --border-strong:#d4d4d1;
+  --text:         #1a1a1a;
+  --text-muted:   #6b6b69;
+  --text-faint:   #9a9a97;
+  --accent:       #475569;
+  --accent-hover: #334155;
+  --accent-soft:  #eef1f5;
+  --shadow:       rgba(0,0,0,0.08);
+  --shadow-strong:rgba(0,0,0,0.16);
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --radius:    10px;
+  --radius-sm: 6px;
+  --header-h:  56px;
+  --maxw:      820px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:           #121212;
+    --bg-subtle:    #1b1b1d;
+    --bg-elevated:  #1f1f22;
+    --border:       #2c2c2f;
+    --border-strong:#3a3a3e;
+    --text:         #ececec;
+    --text-muted:   #a0a0a0;
+    --text-faint:   #6f6f72;
+    --accent:       #94a3b8;
+    --accent-hover: #b4c0cf;
+    --accent-soft:  #23262b;
+    --shadow:       rgba(0,0,0,0.4);
+    --shadow-strong:rgba(0,0,0,0.6);
+  }
+}
+
+/* ---- RESET ---- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app { min-height: 100dvh; }
+
+a { color: inherit; }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ---- SCROLLBARS ---- */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+/* ---- UTILITIES ---- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+/* Header action button (used in AppHeader's right slot from views) */
+.hbtn {
+  width: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: none; color: var(--text);
+  border-radius: 999px; text-decoration: none;
+}
+.hbtn:active { background: var(--accent-soft); }
+
+/* Search-term highlight */
+mark.hl { background: var(--accent-soft); color: var(--text); border-radius: 3px; padding: 0 1px; font-weight: 600; }
+
+/* ---- TRANSITIONS ---- */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.18s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
