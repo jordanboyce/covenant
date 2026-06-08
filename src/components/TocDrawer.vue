@@ -27,9 +27,9 @@
                   v-for="c in b.chapters"
                   :key="c.n"
                   class="chip"
-                  @click="$emit('select', c.page)"
+                  @click="$emit('select', { book: b.name, chapter: c.n })"
                 >{{ c.n }}</button>
-                <button v-if="!b.chapters.length" class="chip wide" @click="$emit('select', b.page)">Open</button>
+                <button v-if="!b.chapters.length" class="chip wide" @click="$emit('select', { book: b.name, chapter: b.chapters[0]?.n ?? 1 })">Open</button>
               </div>
             </div>
           </template>

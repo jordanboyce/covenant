@@ -95,6 +95,93 @@ function pageText(items) {
   return items.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim()
 }
 
+// Extract verse-level data from a page's text items
+function extractPageVerses(items) {
+  if (!items.length) return []
+  const maxY = Math.max(...items.map(i => i.transform[5]))
+  // Remove running header (top 8 units of page Y)
+  const body = items.filter(i => i.transform[5] < maxY - 8)
+  if (!body.length) return []
+
+  // Build text, fixing column hyphenation
+  const text = body.map(i => i.str).join(' ')
+    .replace(/\s+/g, ' ')
+    .replace(/([a-zA-Z])-\s+([a-zA-Z])/g, '$1$2')
+    .trim()
+
+  // Split on verse boundaries: " N Capital" pattern
+  // prepend space so verse 1 at start of text matches too
+  const parts = (' ' + text).split(/ (\d{1,3}) (?=[A-Z])/g)
+  // result: [pretext, "n1", "verseText1", "n2", "verseText2", ...]
+
+  const verses = []
+  for (let i = 1; i + 1 < parts.length; i += 2) {
+    const n = parseInt(parts[i])
+    const t = parts[i + 1].trim()
+    if (n >= 1 && n <= 250) verses.push({ n, text: t })
+  }
+  return verses
+}
+
+// Merge and validate verses across chapter pages into a clean sequence
+function assembleChapterVerses(pageVerseArrays) {
+  // Flatten all verses from all pages in order
+  const all = []
+  for (const pv of pageVerseArrays) {
+    for (const v of pv) {
+      // Merge continuation of same verse across page break
+      if (all.length > 0 && v.n === all[all.length - 1].n) {
+        all[all.length - 1].text += ' ' + v.text
+      } else {
+        all.push({ n: v.n, text: v.text })
+      }
+    }
+  }
+
+  // Find first verse 1 to start the sequence
+  const startIdx = Math.max(0, all.findIndex(v => v.n === 1))
+  const valid = []
+  let maxN = 0
+
+  for (let i = startIdx; i < all.length; i++) {
+    const v = all[i]
+    if (v.n > maxN && v.n <= maxN + 5 && v.text.length >= 5) {
+      // Accept: advances the sequence (allows gaps up to 5 for missed/false-positive verses)
+      valid.push({ n: v.n, text: v.text })
+      maxN = v.n
+    } else if (v.n < maxN - 10 && valid.length >= 5) {
+      // Large backward jump after substantial content = crossed into next chapter
+      break
+    }
+  }
+  return valid
+}
+
+// Build per-chapter verse data from indexed page items + nav book data
+function buildScriptureChapters(allPageItems, books, totalPages) {
+  const chapters = []
+  for (const book of books) {
+    for (let i = 0; i < book.chapters.length; i++) {
+      const ch = book.chapters[i]
+      const nextCh = book.chapters[i + 1]
+      // Include page before chapter start (catches opening pages without running headers)
+      const startPage = Math.max(1, ch.page - 1)
+      const endPage = nextCh ? nextCh.page : Math.min(totalPages, ch.page + 30)
+
+      const pageVerseArrays = []
+      for (let p = startPage; p <= endPage; p++) {
+        const items = allPageItems[p - 1]  // 0-indexed
+        if (items) pageVerseArrays.push(extractPageVerses(items))
+      }
+      const verses = assembleChapterVerses(pageVerseArrays)
+      if (verses.length > 0) {
+        chapters.push({ book: book.name, chapter: ch.n, verses })
+      }
+    }
+  }
+  return chapters
+}
+
 async function loadPdf(file) {
   const data = new Uint8Array(readFileSync(join(PUB, file)))
   return pdfjs.getDocument({ data }).promise
@@ -106,11 +193,13 @@ async function indexReferencePdf(docId, file, books) {
   const pdf = await loadPdf(file)
   const table = bookTable(books)
   const pages = []
+  const allPageItems = []
   const order = [] // book names in first-seen order
   const byBook = new Map() // name -> { name, page, chapters:[{n,page}], seen:Set }
 
   for (let n = 1; n <= pdf.numPages; n++) {
     const items = (await pdf.getPage(n).then((p) => p.getTextContent())).items
+    allPageItems.push(items)
     const ref = parseHeader(topLine(items), table)
     const text = pageText(items)
     pages.push({ p: n, ref: ref ? refLabel(ref) : '', text })
@@ -139,7 +228,7 @@ async function indexReferencePdf(docId, file, books) {
     const r = byBook.get(name)
     return { name, page: r.page, chapters: r.chapters.sort((a, b) => a.n - b.n) }
   })
-  return { numPages: pdf.numPages, pages, books: booksOut }
+  return { numPages: pdf.numPages, pages, books: booksOut, allPageItems }
 }
 
 function refLabel(ref) {
@@ -253,6 +342,13 @@ async function main() {
   const bible = await indexReferencePdf('bible', '/pdfs/holy-bible.pdf', BIBLE_BOOKS)
   nav.bible = { type: 'reference', numPages: bible.numPages, books: bible.books }
   write('pages-bible.json', bible.pages)
+
+  console.log('Building scripture verse data…')
+  const scriptureTriple = buildScriptureChapters(triple.allPageItems, triple.books, triple.numPages)
+  write('scripture-triple.json', scriptureTriple)
+
+  const scriptureBible = buildScriptureChapters(bible.allPageItems, bible.books, bible.numPages)
+  write('scripture-bible.json', scriptureBible)
 
   console.log('Come, Follow Me…')
   const cfm = await indexOutlinePdf('cfm-2026', '/pdfs/come-follow-me-2026.pdf')

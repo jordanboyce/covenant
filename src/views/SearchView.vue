@@ -73,6 +73,7 @@ const searched = ref(false)
 let timer = null
 let runId = 0
 
+const SCRIPTURE_DOCS = new Set(['triple', 'bible'])
 const DOC_ORDER = ['triple', 'bible', 'cfm-2026', 'hymns']
 const grouped = computed(() => {
   const map = new Map()
@@ -115,14 +116,21 @@ function clear() {
 }
 
 function targetFor(r) {
-  return r.kind === 'hymn'
-    ? { path: `/view/hymns`, query: { n: r.number } }
-    : { path: `/view/${r.docId}`, query: { page: r.page } }
+  if (r.kind === 'hymn') return { path: `/view/hymns`, query: { n: r.number } }
+  if (SCRIPTURE_DOCS.has(r.docId) && r.ref) {
+    const bc = refToBookChapter(r.ref)
+    if (bc) return { path: `/view/${r.docId}`, query: { book: bc.book, chapter: String(bc.chapter) } }
+  }
+  return { path: `/view/${r.docId}`, query: { page: r.page } }
 }
 function targetForRef(j) {
-  return j.kind === 'hymn'
-    ? { path: `/view/hymns`, query: { n: j.number } }
-    : { path: `/view/${j.docId}`, query: { page: j.page } }
+  if (j.kind === 'hymn') return { path: `/view/hymns`, query: { n: j.number } }
+  if (j.kind === 'scripture') return { path: `/view/${j.docId}`, query: { book: j.book, chapter: String(j.chapter) } }
+  return { path: `/view/${j.docId}`, query: { page: j.page } }
+}
+function refToBookChapter(ref) {
+  const m = ref.match(/^(.+?)\s+(\d+)$/)
+  return m ? { book: m[1], chapter: parseInt(m[2]) } : null
 }
 
 function resultLabel(r) {

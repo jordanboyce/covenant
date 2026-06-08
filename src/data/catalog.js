@@ -15,7 +15,7 @@ export const DOCUMENTS = [
   {
     id: 'triple',
     category: 'scriptures',
-    type: 'pdf',
+    type: 'scripture',
     title: 'Triple Combination',
     subtitle: 'Book of Mormon · Doctrine and Covenants · Pearl of Great Price',
     file: '/pdfs/triple-combination.pdf',
@@ -23,7 +23,7 @@ export const DOCUMENTS = [
   {
     id: 'bible',
     category: 'scriptures',
-    type: 'pdf',
+    type: 'scripture',
     title: 'Holy Bible',
     subtitle: 'Old & New Testament · King James Version',
     file: '/pdfs/holy-bible.pdf',

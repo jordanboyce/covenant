@@ -146,13 +146,12 @@ export async function parseReference(query) {
     for (const b of d.books) {
       const bn = b.name.toLowerCase()
       if (bn === bookQ || bn.startsWith(bookQ) || bookQ.startsWith(bn)) {
-        const ch = b.chapters.find((c) => c.n === chapter)
         return {
           docId,
-          kind: 'page',
+          kind: 'scripture',
           label: `${b.name} ${chapter}`,
-          page: ch ? ch.page : b.page,
-          exact: !!ch,
+          book: b.name,
+          chapter: chapter,
         }
       }
     }
