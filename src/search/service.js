@@ -75,7 +75,9 @@ export function buildIndex() {
     const ms = new MiniSearch(MS_OPTS)
     const docs = []
     for (const docId of PDF_DOCS) {
-      const pages = await fetch(`/search/pages-${docId}.json`).then((r) => r.json())
+      const r1 = await fetch(`/search/pages-${docId}.json`)
+      if (!r1.ok) throw new Error(`Failed to load pages-${docId}.json`)
+      const pages = await r1.json()
       for (const pg of pages) {
         if (!pg.text) continue
         const id = `p:${docId}:${pg.p}`
@@ -84,7 +86,9 @@ export function buildIndex() {
         docs.push(rec)
       }
     }
-    const hymns = await fetch('/search/hymns.json').then((r) => r.json())
+    const r2 = await fetch('/search/hymns.json')
+    if (!r2.ok) throw new Error('Failed to load hymns.json')
+    const hymns = await r2.json()
     for (const h of hymns) {
       const id = `h:${h.number}`
       const rec = { id, docId: 'hymns', kind: 'hymn', number: h.number, title: h.title, section: h.section, text: h.text }

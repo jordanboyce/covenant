@@ -97,14 +97,16 @@ function pageText(items) {
 
 // Extract verse-level data from a page's text items.
 // pageWidth is used to split the two-column layout (left col first, then right).
+const EMPTY_PAGE = { verses: [], preamble: '', firstVerse: 999 }
+
 function extractPageVerses(items, pageWidth) {
-  if (!items.length) return []
+  if (!items.length) return EMPTY_PAGE
   const maxY = Math.max(...items.map(i => i.transform[5]))
 
   // Remove running header (top 8 pts), footnotes (h≈8.3), and section headings (h≈10.0).
   // LDS scripture PDFs: body text h≈10.4, section headings h≈10.0, footnote text h≈8.3, footnote letters h≈6.
   const body = items.filter(i => i.transform[5] < maxY - 8 && Math.abs(i.transform[3]) >= 10.2)
-  if (!body.length) return []
+  if (!body.length) return EMPTY_PAGE
 
   // Two-column layout: left column then right column, each top-to-bottom left-to-right.
   const colSplit = (pageWidth || 432) / 2
@@ -112,8 +114,15 @@ function extractPageVerses(items, pageWidth) {
     const dy = b.transform[5] - a.transform[5]
     return Math.abs(dy) > 2 ? dy : a.transform[4] - b.transform[4]
   }
-  const left  = body.filter(i => i.transform[4] < colSplit).sort(byRow)
-  const right = body.filter(i => i.transform[4] >= colSplit).sort(byRow)
+  // Drop-cap letters (h≈44) have a lower baseline y than the surrounding text, causing them
+  // to sort into the middle of verse 1 text rather than the start. Prepend them first.
+  const isDropCap = i => Math.abs(i.transform[3]) > 20
+  const colSort = (items) => [
+    ...items.filter(isDropCap),
+    ...items.filter(i => !isDropCap(i)).sort(byRow),
+  ]
+  const left  = colSort(body.filter(i => i.transform[4] < colSplit))
+  const right = colSort(body.filter(i => i.transform[4] >= colSplit))
 
   let text = [...left, ...right].map(i => i.str).join(' ')
     .replace(/\s+/g, ' ')
@@ -131,7 +140,36 @@ function extractPageVerses(items, pageWidth) {
     const t = parts[i + 1].replace(/^¶\s*/, '').trim()  // strip leading ¶
     if (n >= 1 && n <= 250) verses.push({ n, text: t })
   }
-  return verses
+  const preamble = (parts[0] || '').trim()
+  const firstVerse = verses[0]?.n ?? 999
+  return { verses, preamble, firstVerse }
+}
+
+// Recover drop-cap verse 1 text from preamble (text before first explicit verse number).
+// LDS scripture chapters start with a drop-cap letter for verse 1 — no "1" appears in the PDF.
+// Chapter summaries are h≈10.4 (same as verse text) so they end up in the preamble; strip them.
+function recoverVerse1(preamble) {
+  let text = preamble
+  // Strip LDS chapter summary (em-dash separated phrases ending in a period)
+  const lastDash = text.lastIndexOf('—')  // em-dash
+  if (lastDash !== -1) {
+    const tail = text.slice(lastDash + 1)
+    // Summary phrase ends with ". " before verse text
+    const m = tail.match(/^[^]*?\.\s+(.+)/s)
+    if (m) text = m[1]
+    else text = tail.replace(/^[^A-Z]*([A-Z])/, '$1')
+  }
+  // Strip marginal date notes: "About 600 b.c." / "About 588–570 b.c."
+  text = text.replace(/^About\s+[\d–—\-]+\s*[Bb]\.?\s*[Cc]\.?\s*/, '')
+  // Fix PDF spacing artifacts: drop-cap "I , Nephi" → "I, Nephi"; "word ," → "word,"
+  text = text.trim()
+    .replace(/^([A-Z])\s+([,;:])/, '$1$2')
+    .replace(/\s+([,;:.!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+  // Only accept text that clearly starts a sentence (capital + lowercase/punctuation).
+  // Rejects PDF artifacts like ", N EPHI" or orphan single-letter lines.
+  if (text.length < 15 || !/^[A-Z][a-z,;:.!?]/.test(text)) return ''
+  return text
 }
 
 // Merge and validate verses from consecutive pages into a clean monotonic sequence.
@@ -184,13 +222,32 @@ function buildScriptureChapters(allPageItems, books, totalPages, pages) {
       const endPage = nextCh ? nextCh.page : Math.min(totalPages, ch.page + 30)
 
       const pageVerseArrays = []
+      let v1preamble = ''
       for (let p = startPage; p <= endPage; p++) {
         const entry = allPageItems[p - 1]
-        if (entry) pageVerseArrays.push(extractPageVerses(entry.items, entry.width))
+        if (entry) {
+          const result = extractPageVerses(entry.items, entry.width)
+          pageVerseArrays.push(result.verses)
+          // Capture preamble from the first page where the leading explicit verse is 2 —
+          // that means the text before it is drop-cap verse 1.  startPage may be the lookback
+          // (ch.page-1) when that page is a chapter-opening page with no running header.
+          // Limit to startPage..ch.page+1 so we never accidentally grab the next chapter's
+          // opening page (endPage = nextCh.page) when chapter N's verse 2 falls late.
+          if (!v1preamble && p >= startPage && p <= ch.page + 1 && result.firstVerse === 2 && result.preamble.length >= 15) {
+            v1preamble = result.preamble
+          }
+        }
       }
-      const verses = assembleChapterVerses(pageVerseArrays)
+      let verses = assembleChapterVerses(pageVerseArrays)
+      // Prepend drop-cap verse 1 if it was missing from the explicit verse splits
+      if (verses.length > 0 && verses[0].n !== 1 && v1preamble) {
+        const v1text = recoverVerse1(v1preamble)
+        if (v1text) verses = [{ n: 1, text: v1text }, ...verses]
+      }
       if (verses.length > 0) {
-        chapters.push({ book: book.name, chapter: ch.n, verses })
+        // Normalize "Psalm" → "Psalms": KJV Bible PDF alternates between both forms
+        const bookName = book.name === 'Psalm' ? 'Psalms' : book.name
+        chapters.push({ book: bookName, chapter: ch.n, verses })
       }
     }
   }
