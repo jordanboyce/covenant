@@ -95,163 +95,17 @@ function pageText(items) {
   return items.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim()
 }
 
-// Extract verse-level data from a page's text items.
-// pageWidth is used to split the two-column layout (left col first, then right).
-const EMPTY_PAGE = { verses: [], preamble: '', firstVerse: 999 }
-
-function extractPageVerses(items, pageWidth) {
-  if (!items.length) return EMPTY_PAGE
-  const maxY = Math.max(...items.map(i => i.transform[5]))
-
-  // Remove running header (top 8 pts), footnotes (h≈8.3), and section headings (h≈10.0).
-  // LDS scripture PDFs: body text h≈10.4, section headings h≈10.0, footnote text h≈8.3, footnote letters h≈6.
-  const body = items.filter(i => i.transform[5] < maxY - 8 && Math.abs(i.transform[3]) >= 10.2)
-  if (!body.length) return EMPTY_PAGE
-
-  // Two-column layout: left column then right column, each top-to-bottom left-to-right.
-  const colSplit = (pageWidth || 432) / 2
-  const byRow = (a, b) => {
-    const dy = b.transform[5] - a.transform[5]
-    return Math.abs(dy) > 2 ? dy : a.transform[4] - b.transform[4]
+// Build scripture chapter data from the clean LDS scriptures JSON source.
+// volumeFilter selects which volumes to include (Bible vs Triple Combination).
+function buildScriptureChaptersFromJson(verses, volumeFilter) {
+  const chapters = new Map()
+  for (const v of verses.filter(volumeFilter)) {
+    const book = v.book_title.replace(/--/g, '—')  // normalize double-dash → em-dash
+    const key = `${book}\x00${v.chapter_number}`
+    if (!chapters.has(key)) chapters.set(key, { book, chapter: v.chapter_number, verses: [] })
+    chapters.get(key).verses.push({ n: v.verse_number, text: v.scripture_text })
   }
-  // Drop-cap letters (h≈44) have a lower baseline y than the surrounding text, causing them
-  // to sort into the middle of verse 1 text rather than the start. Prepend them first.
-  const isDropCap = i => Math.abs(i.transform[3]) > 20
-  const colSort = (items) => [
-    ...items.filter(isDropCap),
-    ...items.filter(i => !isDropCap(i)).sort(byRow),
-  ]
-  const left  = colSort(body.filter(i => i.transform[4] < colSplit))
-  const right = colSort(body.filter(i => i.transform[4] >= colSplit))
-
-  let text = [...left, ...right].map(i => i.str).join(' ')
-    .replace(/\s+/g, ' ')
-    .replace(/([a-zA-Z])-\s+([a-zA-Z])/g, '$1$2')  // fix column-break hyphenation
-    .trim()
-
-  // Strip chapter headings (e.g. "C HAPTER 32 " in LDS small-caps two-column format)
-  text = text.replace(/C\s+HAPTER\s+\d+\s+/g, '')
-
-  // Split on verse boundaries: " N Capital" — also handles KJV pilcrow (¶) before verse text
-  const parts = (' ' + text).split(/ (\d{1,3}) (?=[A-Z¶])/g)
-  const verses = []
-  for (let i = 1; i + 1 < parts.length; i += 2) {
-    const n = parseInt(parts[i])
-    const t = parts[i + 1].replace(/^¶\s*/, '').trim()  // strip leading ¶
-    if (n >= 1 && n <= 250) verses.push({ n, text: t })
-  }
-  const preamble = (parts[0] || '').trim()
-  const firstVerse = verses[0]?.n ?? 999
-  return { verses, preamble, firstVerse }
-}
-
-// Recover drop-cap verse 1 text from preamble (text before first explicit verse number).
-// LDS scripture chapters start with a drop-cap letter for verse 1 — no "1" appears in the PDF.
-// Chapter summaries are h≈10.4 (same as verse text) so they end up in the preamble; strip them.
-function recoverVerse1(preamble) {
-  let text = preamble
-  // Strip LDS chapter summary (em-dash separated phrases ending in a period)
-  const lastDash = text.lastIndexOf('—')  // em-dash
-  if (lastDash !== -1) {
-    const tail = text.slice(lastDash + 1)
-    // Summary phrase ends with ". " before verse text
-    const m = tail.match(/^[^]*?\.\s+(.+)/s)
-    if (m) text = m[1]
-    else text = tail.replace(/^[^A-Z]*([A-Z])/, '$1')
-  }
-  // Strip marginal date notes: "About 600 b.c." / "About 588–570 b.c."
-  text = text.replace(/^About\s+[\d–—\-]+\s*[Bb]\.?\s*[Cc]\.?\s*/, '')
-  // Fix PDF spacing artifacts: drop-cap "I , Nephi" → "I, Nephi"; "word ," → "word,"
-  text = text.trim()
-    .replace(/^([A-Z])\s+([,;:])/, '$1$2')
-    .replace(/\s+([,;:.!?])/g, '$1')
-    .replace(/\s+/g, ' ')
-  // Only accept text that clearly starts a sentence (capital + lowercase/punctuation).
-  // Rejects PDF artifacts like ", N EPHI" or orphan single-letter lines.
-  if (text.length < 15 || !/^[A-Z][a-z,;:.!?]/.test(text)) return ''
-  return text
-}
-
-// Merge and validate verses from consecutive pages into a clean monotonic sequence.
-function assembleChapterVerses(pageVerseArrays) {
-  const all = []
-  for (const pv of pageVerseArrays) {
-    for (const v of pv) {
-      if (all.length > 0 && v.n === all[all.length - 1].n) {
-        all[all.length - 1].text += ' ' + v.text  // continuation across page break
-      } else {
-        all.push({ n: v.n, text: v.text })
-      }
-    }
-  }
-
-  const startIdx = Math.max(0, all.findIndex(v => v.n === 1))
-  const valid = []
-  let maxN = 0
-  for (let i = startIdx; i < all.length; i++) {
-    const v = all[i]
-    if (v.n > maxN && v.n <= maxN + 5 && v.text.length >= 5) {
-      valid.push({ n: v.n, text: v.text })
-      maxN = v.n
-    } else if (v.n < maxN - 10 && valid.length >= 5) {
-      break  // large backward jump = entered next chapter
-    }
-  }
-  return valid
-}
-
-// Build per-chapter verse data from indexed page items + nav book data.
-// pages is the [{p, ref}] array used to determine whether the lookback page
-// belongs to a previous chapter (has a running header) or is a chapter-opening
-// title page (no running header, ref='').
-function buildScriptureChapters(allPageItems, books, totalPages, pages) {
-  const pageRefs = new Map(pages.map(p => [p.p, p.ref]))
-  const chapters = []
-
-  for (const book of books) {
-    for (let i = 0; i < book.chapters.length; i++) {
-      const ch = book.chapters[i]
-      const nextCh = book.chapters[i + 1]
-
-      // Include the page before the nav start only when it has no running header —
-      // that signals a chapter-title/intro page whose verse content belongs here.
-      // Pages with a running header belong to the previous chapter.
-      const lookback = ch.page - 1
-      const startPage = (lookback >= 1 && (pageRefs.get(lookback) || '') === '')
-        ? lookback : ch.page
-      const endPage = nextCh ? nextCh.page : Math.min(totalPages, ch.page + 30)
-
-      const pageVerseArrays = []
-      let v1preamble = ''
-      for (let p = startPage; p <= endPage; p++) {
-        const entry = allPageItems[p - 1]
-        if (entry) {
-          const result = extractPageVerses(entry.items, entry.width)
-          pageVerseArrays.push(result.verses)
-          // Capture preamble from the first page where the leading explicit verse is 2 —
-          // that means the text before it is drop-cap verse 1.  startPage may be the lookback
-          // (ch.page-1) when that page is a chapter-opening page with no running header.
-          // Limit to startPage..ch.page+1 so we never accidentally grab the next chapter's
-          // opening page (endPage = nextCh.page) when chapter N's verse 2 falls late.
-          if (!v1preamble && p >= startPage && p <= ch.page + 1 && result.firstVerse === 2 && result.preamble.length >= 15) {
-            v1preamble = result.preamble
-          }
-        }
-      }
-      let verses = assembleChapterVerses(pageVerseArrays)
-      // Prepend drop-cap verse 1 if it was missing from the explicit verse splits
-      if (verses.length > 0 && verses[0].n !== 1 && v1preamble) {
-        const v1text = recoverVerse1(v1preamble)
-        if (v1text) verses = [{ n: 1, text: v1text }, ...verses]
-      }
-      if (verses.length > 0) {
-        // Normalize "Psalm" → "Psalms": KJV Bible PDF alternates between both forms
-        const bookName = book.name === 'Psalm' ? 'Psalms' : book.name
-        chapters.push({ book: bookName, chapter: ch.n, verses })
-      }
-    }
-  }
-  return chapters
+  return [...chapters.values()]
 }
 
 async function loadPdf(file) {
@@ -265,15 +119,12 @@ async function indexReferencePdf(docId, file, books) {
   const pdf = await loadPdf(file)
   const table = bookTable(books)
   const pages = []
-  const allPageItems = []
   const order = [] // book names in first-seen order
   const byBook = new Map() // name -> { name, page, chapters:[{n,page}], seen:Set }
 
   for (let n = 1; n <= pdf.numPages; n++) {
     const page = await pdf.getPage(n)
     const items = (await page.getTextContent()).items
-    const width = page.getViewport({ scale: 1 }).width
-    allPageItems.push({ items, width })
     const ref = parseHeader(topLine(items), table)
     const text = pageText(items)
     pages.push({ p: n, ref: ref ? refLabel(ref) : '', text })
@@ -302,7 +153,7 @@ async function indexReferencePdf(docId, file, books) {
     const r = byBook.get(name)
     return { name, page: r.page, chapters: r.chapters.sort((a, b) => a.n - b.n) }
   })
-  return { numPages: pdf.numPages, pages, books: booksOut, allPageItems }
+  return { numPages: pdf.numPages, pages, books: booksOut }
 }
 
 function refLabel(ref) {
@@ -418,11 +269,11 @@ async function main() {
   write('pages-bible.json', bible.pages)
 
   console.log('Building scripture verse data…')
-  const scriptureTriple = buildScriptureChapters(triple.allPageItems, triple.books, triple.numPages, triple.pages)
-  write('scripture-triple.json', scriptureTriple)
-
-  const scriptureBible = buildScriptureChapters(bible.allPageItems, bible.books, bible.numPages, bible.pages)
-  write('scripture-bible.json', scriptureBible)
+  const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url))
+  const ldsVerses = JSON.parse(readFileSync(join(SCRIPTS_DIR, 'lds-scriptures.json'), 'utf8'))
+  const BIBLE_VOLS = new Set(['Old Testament', 'New Testament'])
+  write('scripture-triple.json', buildScriptureChaptersFromJson(ldsVerses, v => !BIBLE_VOLS.has(v.volume_title)))
+  write('scripture-bible.json', buildScriptureChaptersFromJson(ldsVerses, v => BIBLE_VOLS.has(v.volume_title)))
 
   console.log('Come, Follow Me…')
   const cfm = await indexOutlinePdf('cfm-2026', '/pdfs/come-follow-me-2026.pdf')
